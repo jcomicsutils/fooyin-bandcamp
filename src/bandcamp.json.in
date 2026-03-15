@@ -1,0 +1,9 @@
+{
+    "Name"        : "Bandcamp Input",
+    "Version"     : "@PROJECT_VERSION@",
+    "Author"      : "jcomicsutils (vibe-coded)",
+    "License"     : [ "GPL-3.0" ],
+    "Category"    : "Audio.Input",
+    "Description" : "Stream Bandcamp albums directly in fooyin",
+    "Url"         : "https://github.com/jcomicsutils/fooyin-bandcamp"
+}
