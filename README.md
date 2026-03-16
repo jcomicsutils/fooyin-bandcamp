@@ -10,8 +10,7 @@ A [fooyin](https://github.com/ludouzi/fooyin) plugin that lets you stream Bandca
 ---
 
 > [!WARNING]
-> **Known bug: SIGSEGV on rapid track changes or playing new tracks after closing fooyin.**
-> If you switch tracks too quickly the player will segfault and crash. **If you can fix it, please open a PR, it would be genuinely appreciated.**
+> **Status update:** The previous known bug (SIGSEGV on rapid track changes or playing new tracks after closing fooyin) has been patched by an LLM. Preliminary testing shows it seems to be working, but **more testing is still needed and human review of the C++ threading logic is genuinely appreciated.**
 
 ---
 
@@ -35,7 +34,7 @@ cmake -B build \
   -DCMAKE_PREFIX_PATH=/path/to/fooyin/install
 
 cmake --build build --parallel
-cp build/bandcampinput.so ~/.local/lib/fooyin/plugins/
+cp build/fyplugin_bandcampinput.so ~/.local/lib/fooyin/plugins/
 ```
 
 ---

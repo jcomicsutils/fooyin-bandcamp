@@ -9,6 +9,10 @@
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QThread>
+#include <QWaitCondition>
 
 #include <QLoggingCategory>
 
@@ -67,34 +71,70 @@ namespace Fooyin::Bandcamp {
 
     QByteArray BandcampFetcher::httpGet(const QString& url, int timeoutMs)
     {
-        QNetworkAccessManager nam;
-        nam.setAutoDeleteReplies(true);
+        QByteArray result;
+        QString errorString;
 
-        QNetworkRequest req{QUrl{url}};
-        req.setHeader(QNetworkRequest::UserAgentHeader, QLatin1StringView{kUserAgent});
-        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+        QMutex mutex;
+        QWaitCondition cond;
+        bool finished = false;
 
-        QNetworkReply* reply = nam.get(req);
+        // Run the HTTP fetch in a throwaway background thread.
+        // This prevents QEventLoop from processing engine-thread events (like
+        // decoder destruction/track changes) while we wait for the network.
+        QThread* thread = QThread::create([&]() {
+            QNetworkAccessManager nam;
+            QNetworkRequest req{QUrl{url}};
+            req.setHeader(QNetworkRequest::UserAgentHeader, QLatin1StringView{kUserAgent});
+            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
 
-        QEventLoop loop;
-        QTimer     timer;
-        timer.setSingleShot(true);
-        timer.setInterval(timeoutMs);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
-            reply->abort();
-            loop.quit();
+            QNetworkReply* reply = nam.get(req);
+
+            QEventLoop loop;
+            QTimer     timer;
+            timer.setSingleShot(true);
+            timer.setInterval(timeoutMs);
+            
+            QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+            QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+                reply->abort();
+                loop.quit();
+            });
+            
+            timer.start();
+            loop.exec();
+
+            if (reply->error() != QNetworkReply::NoError) {
+                errorString = reply->errorString();
+            } else {
+                result = reply->readAll();
+            }
+            
+            reply->deleteLater();
+
+            QMutexLocker lock(&mutex);
+            finished = true;
+            cond.wakeAll();
         });
-        timer.start();
-        loop.exec();
 
-        if (reply->error() != QNetworkReply::NoError) {
-            m_lastError = reply->errorString();
+        QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start();
+
+        // Safely block the calling thread (Engine thread) without spinning its event loop
+        {
+            QMutexLocker lock(&mutex);
+            while (!finished) {
+                cond.wait(&mutex);
+            }
+        }
+
+        if (!errorString.isEmpty()) {
+            m_lastError = errorString;
             qCWarning(BC_FETCH) << "HTTP error for" << url << ":" << m_lastError;
             return {};
         }
-        return reply->readAll();
+        
+        return result;
     }
 
     // ── Page parsing ──────────────────────────────────────────────────────────
@@ -108,119 +148,112 @@ namespace Fooyin::Bandcamp {
             uR"re(data-tralbum="([^"]*)")re"_s,
         QRegularExpression::DotMatchesEverythingOption);
 
-    const QString s = QString::fromUtf8(html);
-    const auto    m = re.match(s);
-    if (!m.hasMatch())
-        return {};
+        const QString s = QString::fromUtf8(html);
+        const auto    m = re.match(s);
+        if (!m.hasMatch())
+            return {};
 
-    return QJsonDocument::fromJson(unescapeHtml(m.captured(1)).toUtf8()).object();
+        return QJsonDocument::fromJson(unescapeHtml(m.captured(1)).toUtf8()).object();
     }
 
-/* static */
-AlbumInfo BandcampFetcher::parsePage(const QByteArray& html, const QString& pageUrl)
-{
-    AlbumInfo info;
-    info.albumUrl = pageUrl;
+    /* static */
+    AlbumInfo BandcampFetcher::parsePage(const QByteArray& html, const QString& pageUrl)
+    {
+        AlbumInfo info;
+        info.albumUrl = pageUrl;
 
-    const QJsonObject tralbum = extractTralbum(html);
-    if (tralbum.isEmpty()) {
-        qCWarning(BC_FETCH) << "No data-tralbum on page:" << pageUrl;
+        const QJsonObject tralbum = extractTralbum(html);
+        if (tralbum.isEmpty()) {
+            qCWarning(BC_FETCH) << "No data-tralbum on page:" << pageUrl;
+            return info;
+        }
+
+        const QJsonObject current = tralbum.value(u"current"_s).toObject();
+        info.albumArtist = tralbum.value(u"artist"_s).toString();
+        info.albumTitle  = current.value(u"title"_s).toString();
+
+        const QString releaseDate =
+        tralbum.value(u"album_release_date"_s).toString().isEmpty()
+        ? current.value(u"release_date"_s).toString()
+        : tralbum.value(u"album_release_date"_s).toString();
+        static const QRegularExpression yearRe(u"(\\d{4})"_s);
+        const auto ym = yearRe.match(releaseDate);
+        info.date = ym.hasMatch() ? ym.captured(1) : releaseDate;
+
+        for (const QJsonValue& kv : tralbum.value(u"keywords"_s).toArray())
+            info.genres << kv.toString();
+
+        const QString htmlStr = QString::fromUtf8(html);
+        static const QRegularExpression artRe(
+            uR"re(id="tralbumArt"[^>]*>.*?<a[^>]+href="([^"]+)")re"_s,
+            QRegularExpression::DotMatchesEverythingOption);
+        if (const auto am = artRe.match(htmlStr); am.hasMatch())
+            info.coverUrl = highResCoverUrl(am.captured(1));
+
+        QUrl bu{pageUrl};
+        bu.setQuery({});
+        bu.setFragment({});
+        const QString baseUrl = bu.toString();
+
+        const QJsonArray trackinfo = tralbum.value(u"trackinfo"_s).toArray();
+        const int total = static_cast<int>(trackinfo.size());
+
+        for (const QJsonValue& tv : trackinfo) {
+            const QJsonObject t = tv.toObject();
+
+            if (t.value(u"file"_s).toObject().value(u"mp3-128"_s).toString().isEmpty())
+                continue;
+
+            TrackInfo ti;
+            ti.title       = t.value(u"title"_s).toString();
+            ti.trackNum    = t.value(u"track_num"_s).toInt();
+            ti.totalTracks = total;
+            ti.durationMs  = static_cast<uint64_t>(t.value(u"duration"_s).toDouble() * 1000.0);
+
+            const QString ta = t.value(u"artist"_s).toString();
+            ti.artist = ta.isEmpty() ? info.albumArtist : ta;
+
+            const QString link = t.value(u"title_link"_s).toString();
+            ti.bandcampUrl = link.isEmpty() ? pageUrl : resolveUrl(baseUrl, link);
+
+            info.tracks.append(ti);
+        }
+
         return info;
     }
 
-    const QJsonObject current = tralbum.value(u"current"_s).toObject();
-    info.albumArtist = tralbum.value(u"artist"_s).toString();
-    info.albumTitle  = current.value(u"title"_s).toString();
-
-    // Year from release date (Bandcamp uses several date formats)
-    const QString releaseDate =
-    tralbum.value(u"album_release_date"_s).toString().isEmpty()
-    ? current.value(u"release_date"_s).toString()
-    : tralbum.value(u"album_release_date"_s).toString();
-    static const QRegularExpression yearRe(u"(\\d{4})"_s);
-    const auto ym = yearRe.match(releaseDate);
-    info.date = ym.hasMatch() ? ym.captured(1) : releaseDate;
-
-    // Genres
-    for (const QJsonValue& kv : tralbum.value(u"keywords"_s).toArray())
-        info.genres << kv.toString();
-
-    // Cover art — high-res _0.jpg from the #tralbumArt anchor href
-    const QString htmlStr = QString::fromUtf8(html);
-    static const QRegularExpression artRe(
-        uR"re(id="tralbumArt"[^>]*>.*?<a[^>]+href="([^"]+)")re"_s,
-        QRegularExpression::DotMatchesEverythingOption);
-    if (const auto am = artRe.match(htmlStr); am.hasMatch())
-        info.coverUrl = highResCoverUrl(am.captured(1));
-
-    // Base URL (no query/fragment) for resolving relative links
-    QUrl bu{pageUrl};
-    bu.setQuery({});
-    bu.setFragment({});
-    const QString baseUrl = bu.toString();
-
-    // Tracks
-    const QJsonArray trackinfo = tralbum.value(u"trackinfo"_s).toArray();
-    const int total = static_cast<int>(trackinfo.size());
-
-    for (const QJsonValue& tv : trackinfo) {
-        const QJsonObject t = tv.toObject();
-
-        // Only include tracks with a streamable mp3-128
-        if (t.value(u"file"_s).toObject().value(u"mp3-128"_s).toString().isEmpty())
-            continue;
-
-        TrackInfo ti;
-        ti.title       = t.value(u"title"_s).toString();
-        ti.trackNum    = t.value(u"track_num"_s).toInt();
-        ti.totalTracks = total;
-        ti.durationMs  = static_cast<uint64_t>(t.value(u"duration"_s).toDouble() * 1000.0);
-
-        const QString ta = t.value(u"artist"_s).toString();
-        ti.artist = ta.isEmpty() ? info.albumArtist : ta;
-
-        const QString link = t.value(u"title_link"_s).toString();
-        ti.bandcampUrl = link.isEmpty() ? pageUrl : resolveUrl(baseUrl, link);
-
-        info.tracks.append(ti);
+    /* static */
+    QString BandcampFetcher::unescapeHtml(const QString& s)
+    {
+        QString r = s;
+        r.replace(u"&amp;"_s,  u"&"_s);
+        r.replace(u"&lt;"_s,   u"<"_s);
+        r.replace(u"&gt;"_s,   u">"_s);
+        r.replace(u"&quot;"_s, u"\""_s);
+        r.replace(u"&#39;"_s,  u"'"_s);
+        r.replace(u"&#x27;"_s, u"'"_s);
+        static const QRegularExpression numEnt(u"&#(\\d+);"_s);
+        QRegularExpressionMatchIterator it = numEnt.globalMatch(r);
+        while (it.hasNext()) {
+            const auto m = it.next();
+            r.replace(m.captured(0), QChar(m.captured(1).toInt()));
+        }
+        return r;
     }
 
-    return info;
-}
-
-/* static */
-QString BandcampFetcher::unescapeHtml(const QString& s)
-{
-    QString r = s;
-    r.replace(u"&amp;"_s,  u"&"_s);
-    r.replace(u"&lt;"_s,   u"<"_s);
-    r.replace(u"&gt;"_s,   u">"_s);
-    r.replace(u"&quot;"_s, u"\""_s);
-    r.replace(u"&#39;"_s,  u"'"_s);
-    r.replace(u"&#x27;"_s, u"'"_s);
-    static const QRegularExpression numEnt(u"&#(\\d+);"_s);
-    QRegularExpressionMatchIterator it = numEnt.globalMatch(r);
-    while (it.hasNext()) {
-        const auto m = it.next();
-        r.replace(m.captured(0), QChar(m.captured(1).toInt()));
+    /* static */
+    QString BandcampFetcher::resolveUrl(const QString& base, const QString& rel)
+    {
+        return QUrl{base}.resolved(QUrl{rel}).toString();
     }
-    return r;
-}
 
-/* static */
-QString BandcampFetcher::resolveUrl(const QString& base, const QString& rel)
-{
-    return QUrl{base}.resolved(QUrl{rel}).toString();
-}
-
-/* static */
-QString BandcampFetcher::highResCoverUrl(const QString& raw)
-{
-    // Convert e.g. …a1234_10.jpg  →  …a1234_0.jpg (full resolution)
-    QString url = raw;
-    static const QRegularExpression sizeRe(u"_(\\d+)\\.(jpg|png)$"_s);
-    url.replace(sizeRe, u"_0.\\2"_s);
-    return url;
-}
+    /* static */
+    QString BandcampFetcher::highResCoverUrl(const QString& raw)
+    {
+        QString url = raw;
+        static const QRegularExpression sizeRe(u"_(\\d+)\\.(jpg|png)$"_s);
+        url.replace(sizeRe, u"_0.\\2"_s);
+        return url;
+    }
 
 } // namespace Fooyin::Bandcamp
