@@ -106,9 +106,9 @@ namespace Fooyin::Bandcamp {
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
-    BandcampStreamDialog::BandcampStreamDialog(PlaylistHandler*  playlists,
+    BandcampStreamDialog::BandcampStreamDialog(PlaylistHandler* playlists,
                                                PlayerController* player,
-                                               QWidget*          parent)
+                                               QWidget* parent)
     : QDialog{parent}
     , m_playlists{playlists}
     , m_player{player}
@@ -138,7 +138,7 @@ namespace Fooyin::Bandcamp {
         m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
         m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-        m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
         m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_table->setAlternatingRowColors(true);
         m_table->verticalHeader()->hide();
@@ -243,6 +243,8 @@ namespace Fooyin::Bandcamp {
         if (m_album.tracks.isEmpty() || !m_playlists)
             return;
 
+        syncTableToAlbum();
+
         // The combo stores each playlist's UId as Qt::UserRole data.
         const int idx = m_playlistCombo->currentIndex();
         if (idx < 0) {
@@ -266,6 +268,8 @@ namespace Fooyin::Bandcamp {
     {
         if (m_album.tracks.isEmpty() || !m_playlists)
             return;
+
+        syncTableToAlbum();
 
         // Create the playlist EMPTY first, then append via a deferred call.
         //
@@ -358,10 +362,25 @@ namespace Fooyin::Bandcamp {
             numItem->setTextAlignment(Qt::AlignCenter);
             durItem->setTextAlignment(Qt::AlignCenter);
 
+            numItem->setFlags(numItem->flags() & ~Qt::ItemIsEditable);
+            durItem->setFlags(durItem->flags() & ~Qt::ItemIsEditable);
+
             m_table->setItem(i, 0, numItem);
             m_table->setItem(i, 1, titleItem);
             m_table->setItem(i, 2, artItem);
             m_table->setItem(i, 3, durItem);
+        }
+    }
+
+    void BandcampStreamDialog::syncTableToAlbum()
+    {
+        for (int i = 0; i < m_table->rowCount() && i < m_album.tracks.size(); ++i) {
+            if (auto* titleItem = m_table->item(i, 1)) {
+                m_album.tracks[i].title = titleItem->text();
+            }
+            if (auto* artistItem = m_table->item(i, 2)) {
+                m_album.tracks[i].artist = artistItem->text();
+            }
         }
     }
 

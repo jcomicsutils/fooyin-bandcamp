@@ -20,6 +20,7 @@ A [fooyin](https://github.com/ludouzi/fooyin) plugin that lets you stream Bandca
 - Add tracks to an existing fooyin playlist or create a new one
 - Stream URLs are re-resolved at decode time (Bandcamp CDN links expire after ~1 hour)
 - fooyin is able to scrobble loaded tracks
+- Edit track titles and artists directly in the table before adding them to your playlist
 
 ---
 
@@ -44,7 +45,8 @@ cp build/fyplugin_bandcampinput.so ~/.local/lib/fooyin/plugins/
 1. Open fooyin and go to **Library → Stream from Bandcamp…**
 2. Paste an album or track URL
 3. Click **Fetch** and wait for the tracklist to load
-4. Select a target playlist from the dropdown, then click **Add to Playlist** or click **Add to New Playlist** to create one on the fly
+4. (Optional) Double-click the Title or Artist cells in the table to edit the metadata.
+5. Select a target playlist from the dropdown, then click **Add to Playlist** or click **Add to New Playlist** to create one on the fly
 5. Play tracks as normal
 
 ---

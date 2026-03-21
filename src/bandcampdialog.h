@@ -6,11 +6,11 @@
  * The user pastes a Bandcamp album or track URL, clicks Fetch, sees the
  * track list, then uses one of two action buttons:
  *
- *   Add to Playlist     – append tracks to the playlist selected in the
- *                         combo box (populated from PlaylistHandler).
- *   Add to New Playlist – create a new playlist and auto-select it in the
- *                         combo so subsequent "Add to Playlist" clicks keep
- *                         targeting it.
+ * Add to Playlist     – append tracks to the playlist selected in the
+ * combo box (populated from PlaylistHandler).
+ * Add to New Playlist – create a new playlist and auto-select it in the
+ * combo so subsequent "Add to Playlist" clicks keep
+ * targeting it.
  *
  * Crash-safety note
  * ─────────────────
@@ -45,9 +45,9 @@ namespace Fooyin::Bandcamp {
         Q_OBJECT
 
     public:
-        explicit BandcampStreamDialog(PlaylistHandler*  playlists,
+        explicit BandcampStreamDialog(PlaylistHandler* playlists,
                                       PlayerController* player,
-                                      QWidget*          parent = nullptr);
+                                      QWidget* parent = nullptr);
         ~BandcampStreamDialog() override;
 
     private slots:
@@ -63,20 +63,21 @@ namespace Fooyin::Bandcamp {
         void setFetching(bool on);
         void setActionButtonsEnabled(bool on);
         void populateTable(const AlbumInfo& info);
+        void syncTableToAlbum();
 
         // Append tracks to pl after a one-tick defer (crash-safety, see above).
         void deferredAppend(Playlist* pl, const AlbumInfo& album);
 
-        PlaylistHandler*  m_playlists;
+        PlaylistHandler* m_playlists;
         PlayerController* m_player;
 
-        QLineEdit*    m_urlEdit;
-        QPushButton*  m_fetchBtn;
+        QLineEdit* m_urlEdit;
+        QPushButton* m_fetchBtn;
         QTableWidget* m_table;
-        QLabel*       m_statusLabel;
-        QComboBox*    m_playlistCombo;
-        QPushButton*  m_addToPlaylistBtn;
-        QPushButton*  m_addToNewPlaylistBtn;
+        QLabel* m_statusLabel;
+        QComboBox* m_playlistCombo;
+        QPushButton* m_addToPlaylistBtn;
+        QPushButton* m_addToNewPlaylistBtn;
         QProgressBar* m_progress;
 
         AlbumInfo m_album;
