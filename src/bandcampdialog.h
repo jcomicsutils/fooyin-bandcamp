@@ -55,6 +55,7 @@ namespace Fooyin::Bandcamp {
         void onAddToPlaylistClicked();
         void onAddToNewPlaylistClicked();
         void onFetchFinished(const AlbumInfo& info);
+        void onGlobalAlbumChanged(const QString& text);
 
         // Keep the combo box in sync with fooyin's playlist list.
         void refreshPlaylistCombo();
@@ -73,6 +74,7 @@ namespace Fooyin::Bandcamp {
 
         QLineEdit* m_urlEdit;
         QPushButton* m_fetchBtn;
+        QLineEdit* m_albumEdit;
         QTableWidget* m_table;
         QLabel* m_statusLabel;
         QComboBox* m_playlistCombo;

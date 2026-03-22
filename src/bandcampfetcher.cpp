@@ -212,6 +212,8 @@ namespace Fooyin::Bandcamp {
 
             const QString ta = t.value(u"artist"_s).toString();
             ti.artist = ta.isEmpty() ? info.albumArtist : ta;
+            
+            ti.album = info.albumTitle;
 
             const QString link = t.value(u"title_link"_s).toString();
             ti.bandcampUrl = link.isEmpty() ? pageUrl : resolveUrl(baseUrl, link);

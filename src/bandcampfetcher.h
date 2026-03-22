@@ -31,6 +31,7 @@ namespace Fooyin::Bandcamp {
     struct TrackInfo {
         QString  title;
         QString  artist;        // per-track artist (VA releases), else album artist
+        QString  album;         // per-track album
         QString  bandcampUrl;   // https://artist.bandcamp.com/track/slug
         int      trackNum{0};
         int      totalTracks{0};

@@ -75,7 +75,7 @@ namespace Fooyin::Bandcamp {
         t.setModifiedTime(static_cast<uint64_t>(QDateTime::currentSecsSinceEpoch()));
         t.setTitle(ti.title);
         t.setArtists({ti.artist});
-        t.setAlbum(album.albumTitle);
+        t.setAlbum(ti.album);
         t.setAlbumArtists({album.albumArtist});
         t.setDate(album.date);
         t.setDuration(ti.durationMs);
@@ -125,6 +125,15 @@ namespace Fooyin::Bandcamp {
         urlRow->addWidget(m_urlEdit, 1);
         urlRow->addWidget(m_fetchBtn);
 
+        // ── Global Album Edit Row ─────────────────────────────────────────────
+        m_albumEdit = new QLineEdit;
+        m_albumEdit->setPlaceholderText(tr("Global Album Name"));
+        m_albumEdit->setEnabled(false);
+
+        auto* albumRow = new QHBoxLayout;
+        albumRow->addWidget(new QLabel(tr("Album:")), 0);
+        albumRow->addWidget(m_albumEdit, 1);
+
         // ── Progress ──────────────────────────────────────────────────────────
         m_progress = new QProgressBar;
         m_progress->setRange(0, 0);
@@ -132,12 +141,13 @@ namespace Fooyin::Bandcamp {
         m_progress->setMaximumHeight(4);
 
         // ── Track table ───────────────────────────────────────────────────────
-        m_table = new QTableWidget(0, 4);
-        m_table->setHorizontalHeaderLabels({tr("#"), tr("Title"), tr("Artist"), tr("Duration")});
+        m_table = new QTableWidget(0, 5);
+        m_table->setHorizontalHeaderLabels({tr("#"), tr("Title"), tr("Artist"), tr("Album"), tr("Duration")});
         m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
         m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-        m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+        m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
         m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
         m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_table->setAlternatingRowColors(true);
@@ -166,6 +176,7 @@ namespace Fooyin::Bandcamp {
 
         auto* layout = new QVBoxLayout(this);
         layout->addLayout(urlRow);
+        layout->addLayout(albumRow);
         layout->addWidget(m_progress);
         layout->addWidget(m_table, 1);
         layout->addLayout(statusRow);
@@ -187,6 +198,7 @@ namespace Fooyin::Bandcamp {
         connect(m_addToNewPlaylistBtn, &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToNewPlaylistClicked);
         connect(closeBtn,              &QPushButton::clicked,     this, &QDialog::accept);
         connect(m_urlEdit,             &QLineEdit::returnPressed, this, &BandcampStreamDialog::onFetchClicked);
+        connect(m_albumEdit,           &QLineEdit::textEdited,    this, &BandcampStreamDialog::onGlobalAlbumChanged);
     }
 
     BandcampStreamDialog::~BandcampStreamDialog() = default;
@@ -204,6 +216,8 @@ namespace Fooyin::Bandcamp {
         setFetching(true);
         m_statusLabel->setText(tr("Fetching…"));
         m_table->setRowCount(0);
+        m_albumEdit->clear();
+        m_albumEdit->setEnabled(false);
         setActionButtonsEnabled(false);
         m_album = {};
 
@@ -230,12 +244,25 @@ namespace Fooyin::Bandcamp {
 
         m_album = info;
         populateTable(info);
+        
+        m_albumEdit->setText(info.albumTitle);
+        m_albumEdit->setEnabled(true);
 
         m_statusLabel->setText(
             tr("%1 — %2  ·  %3 track(s)")
             .arg(info.albumArtist, info.albumTitle)
             .arg(info.tracks.size()));
         setActionButtonsEnabled(true);
+    }
+
+    void BandcampStreamDialog::onGlobalAlbumChanged(const QString& text)
+    {
+        // Instantly sync the global album edit to all rows in the table
+        for (int i = 0; i < m_table->rowCount(); ++i) {
+            if (auto* item = m_table->item(i, 3)) {
+                item->setText(text);
+            }
+        }
     }
 
     void BandcampStreamDialog::onAddToPlaylistClicked()
@@ -357,6 +384,7 @@ namespace Fooyin::Bandcamp {
             auto* numItem   = new QTableWidgetItem(ti.trackNum > 0 ? QString::number(ti.trackNum) : u"-"_s);
             auto* titleItem = new QTableWidgetItem(ti.title);
             auto* artItem   = new QTableWidgetItem(ti.artist);
+            auto* albumItem = new QTableWidgetItem(ti.album);
             auto* durItem   = new QTableWidgetItem(dur);
 
             numItem->setTextAlignment(Qt::AlignCenter);
@@ -368,18 +396,25 @@ namespace Fooyin::Bandcamp {
             m_table->setItem(i, 0, numItem);
             m_table->setItem(i, 1, titleItem);
             m_table->setItem(i, 2, artItem);
-            m_table->setItem(i, 3, durItem);
+            m_table->setItem(i, 3, albumItem);
+            m_table->setItem(i, 4, durItem);
         }
     }
 
     void BandcampStreamDialog::syncTableToAlbum()
     {
+        // Update the global album title just in case you use it elsewhere
+        m_album.albumTitle = m_albumEdit->text();
+        
         for (int i = 0; i < m_table->rowCount() && i < m_album.tracks.size(); ++i) {
             if (auto* titleItem = m_table->item(i, 1)) {
                 m_album.tracks[i].title = titleItem->text();
             }
             if (auto* artistItem = m_table->item(i, 2)) {
                 m_album.tracks[i].artist = artistItem->text();
+            }
+            if (auto* albumItem = m_table->item(i, 3)) {
+                m_album.tracks[i].album = albumItem->text();
             }
         }
     }
