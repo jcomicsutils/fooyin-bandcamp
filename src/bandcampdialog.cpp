@@ -186,12 +186,14 @@ namespace Fooyin::Bandcamp {
         refreshPlaylistCombo();
 
         // Keep the combo in sync as playlists are added/removed/renamed.
+        // These signals now carry a Playlist* argument (fooyin ≥ 0.10); use a
+        // lambda to drop it so the no-arg refreshPlaylistCombo() slot compiles.
         connect(m_playlists, &PlaylistHandler::playlistAdded,
-                this, &BandcampStreamDialog::refreshPlaylistCombo);
+                this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
         connect(m_playlists, &PlaylistHandler::playlistRemoved,
-                this, &BandcampStreamDialog::refreshPlaylistCombo);
+                this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
         connect(m_playlists, &PlaylistHandler::playlistRenamed,
-                this, &BandcampStreamDialog::refreshPlaylistCombo);
+                this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
 
         connect(m_fetchBtn,            &QPushButton::clicked,     this, &BandcampStreamDialog::onFetchClicked);
         connect(m_addToPlaylistBtn,    &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToPlaylistClicked);
