@@ -37,7 +37,7 @@ void BandcampPlugin::initialise(const GuiPluginContext& context)
     libraryMenu->addAction(action);
 
     QObject::connect(action, &QAction::triggered, this, [this]() {
-        showSettings(nullptr);
+        showStreamDialog();
     });
 }
 
@@ -46,17 +46,6 @@ void BandcampPlugin::shutdown()
     m_playlists     = nullptr;
     m_player        = nullptr;
     m_actionManager = nullptr;
-}
-
-// ── Plugin ────────────────────────────────────────────────────────────────
-
-bool BandcampPlugin::hasSettings() const { return true; }
-
-void BandcampPlugin::showSettings(QWidget* parent)
-{
-    auto* dlg = new BandcampStreamDialog(m_playlists, m_player, parent);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
 }
 
 // ── InputPlugin ───────────────────────────────────────────────────────────
@@ -72,6 +61,15 @@ InputCreator BandcampPlugin::inputCreator() const
     c.decoder = []() { return std::make_unique<BandcampDecoder>(); };
     c.reader  = []() { return std::make_unique<BandcampReader>(); };
     return c;
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────
+
+void BandcampPlugin::showStreamDialog()
+{
+    auto* dlg = new BandcampStreamDialog(m_playlists, m_player, nullptr);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
 }
 
 } // namespace Fooyin::Bandcamp

@@ -68,11 +68,14 @@ namespace Fooyin::Bandcamp {
         Track t{stubPath};
         t.addExtraTag(u"BANDCAMP_URL"_s, bcUri);
 
-        // fileSize > 0 && modifiedTime > 0 makes Track::metadataWasRead() return
-        // true, so fooyin's AudioLoader skips re-reading metadata (which would
-        // blank out our custom tags by reading the empty stub file).
+        // Mark metadata as already read so fooyin's AudioLoader does not attempt
+        // to re-read it from the empty stub file.  Track::metadataWasRead() is a
+        // plain boolean flag; only setMetadataWasRead(true) sets it — setting
+        // fileSize/modifiedTime has no effect on this flag.
+        t.setMetadataWasRead(true);
         t.setFileSize(1);
         t.setModifiedTime(static_cast<uint64_t>(QDateTime::currentSecsSinceEpoch()));
+
         t.setTitle(ti.title);
         t.setArtists({ti.artist});
         t.setAlbum(ti.album);
@@ -186,8 +189,8 @@ namespace Fooyin::Bandcamp {
         refreshPlaylistCombo();
 
         // Keep the combo in sync as playlists are added/removed/renamed.
-        // These signals now carry a Playlist* argument (fooyin ≥ 0.10); use a
-        // lambda to drop it so the no-arg refreshPlaylistCombo() slot compiles.
+        // These signals carry a Playlist* argument; use a lambda to drop it so
+        // the no-arg refreshPlaylistCombo() slot compiles.
         connect(m_playlists, &PlaylistHandler::playlistAdded,
                 this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
         connect(m_playlists, &PlaylistHandler::playlistRemoved,

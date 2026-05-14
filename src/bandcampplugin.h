@@ -34,14 +34,17 @@ public:
 
     // Plugin
     void shutdown() override;
-    [[nodiscard]] bool hasSettings() const override;
-    void showSettings(QWidget* parent) override;
 
     // InputPlugin
     [[nodiscard]] QString      inputName()    const override;
     [[nodiscard]] InputCreator inputCreator() const override;
 
 private:
+    // Opens the Bandcamp streaming dialog.  Called from the Library menu action;
+    // Plugin::hasSettings() / showSettings() were removed in fooyin 0.10.5, so
+    // this is now a plain private helper rather than a virtual override.
+    void showStreamDialog();
+
     PlaylistHandler*  m_playlists{nullptr};
     PlayerController* m_player{nullptr};
     ActionManager*    m_actionManager{nullptr};
