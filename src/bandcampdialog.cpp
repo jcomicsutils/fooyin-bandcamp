@@ -11,6 +11,7 @@
 // QVariant, add:  Q_DECLARE_METATYPE(Fooyin::UId)  to bandcampdialog.h.
 #include <utils/id.h>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
@@ -22,6 +23,7 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -56,8 +58,9 @@ namespace Fooyin::Bandcamp {
         const QString stubDir = QDir::tempPath() + u"/fooyin-bandcamp"_s;
         QDir{}.mkpath(stubDir);
 
+        const QString trackKey = ti.bandcampUrl + u"#"_s + QString::number(ti.trackId ? ti.trackId : ti.trackNum);
         const QString hash =
-        QString::number(qHash(ti.bandcampUrl), 16).left(16).rightJustified(16, u'0');
+            QString::number(qHash(trackKey), 16).left(16).rightJustified(16, u'0');
         const QString stubPath = stubDir + u'/' + hash + u".bcstream"_s;
 
         if (!QFile::exists(stubPath)) {
@@ -67,6 +70,8 @@ namespace Fooyin::Bandcamp {
 
         Track t{stubPath};
         t.addExtraTag(u"BANDCAMP_URL"_s, bcUri);
+        if (ti.trackId > 0)
+            t.addExtraTag(u"BANDCAMP_TRACK_ID"_s, QString::number(ti.trackId));
 
         // Mark metadata as already read so fooyin's AudioLoader does not attempt
         // to re-read it from the empty stub file.  Track::metadataWasRead() is a
@@ -94,6 +99,23 @@ namespace Fooyin::Bandcamp {
 
         if (!album.coverUrl.isEmpty())
             t.addExtraTag(u"BANDCAMP_COVER_URL"_s, album.coverUrl);
+
+        if (ti.replayGain.hasTrackGain) {
+            t.setRGTrackGain(static_cast<float>(ti.replayGain.trackGainDb));
+            t.addExtraTag(u"REPLAYGAIN_TRACK_GAIN"_s, QString::asprintf("%+.2f dB", ti.replayGain.trackGainDb));
+        }
+        if (ti.replayGain.hasAlbumGain) {
+            t.setRGAlbumGain(static_cast<float>(ti.replayGain.albumGainDb));
+            t.addExtraTag(u"REPLAYGAIN_ALBUM_GAIN"_s, QString::asprintf("%+.2f dB", ti.replayGain.albumGainDb));
+        }
+        if (ti.replayGain.hasTrackPeak) {
+            t.setRGTrackPeak(static_cast<float>(ti.replayGain.trackPeak));
+            t.addExtraTag(u"REPLAYGAIN_TRACK_PEAK"_s, QString::number(ti.replayGain.trackPeak, 'f', 6));
+        }
+        if (ti.replayGain.hasAlbumPeak) {
+            t.setRGAlbumPeak(static_cast<float>(ti.replayGain.albumPeak));
+            t.addExtraTag(u"REPLAYGAIN_ALBUM_PEAK"_s, QString::number(ti.replayGain.albumPeak, 'f', 6));
+        }
 
         return t;
     }
@@ -137,6 +159,24 @@ namespace Fooyin::Bandcamp {
         albumRow->addWidget(new QLabel(tr("Album:")), 0);
         albumRow->addWidget(m_albumEdit, 1);
 
+        // ── Options Row ───────────────────────────────────────────────────────
+        m_replayGainCheck = new QCheckBox(tr("Extract ReplayGain metadata"));
+        QSettings settings;
+        m_replayGainCheck->setChecked(settings.value(u"Bandcamp/ExtractReplayGain"_s, true).toBool());
+        connect(m_replayGainCheck, &QCheckBox::toggled, [](bool checked) {
+            QSettings s;
+            s.setValue(u"Bandcamp/ExtractReplayGain"_s, checked);
+        });
+
+        m_cleanTempBtn = new QPushButton(tr("Clean Temp Files"));
+        m_cleanTempBtn->setToolTip(tr("Delete cached stream files and stub files in /tmp/fooyin-bandcamp"));
+        connect(m_cleanTempBtn, &QPushButton::clicked, this, &BandcampStreamDialog::onCleanTempClicked);
+
+        auto* optionsRow = new QHBoxLayout;
+        optionsRow->addWidget(m_replayGainCheck);
+        optionsRow->addStretch();
+        optionsRow->addWidget(m_cleanTempBtn);
+
         // ── Progress ──────────────────────────────────────────────────────────
         m_progress = new QProgressBar;
         m_progress->setRange(0, 0);
@@ -144,13 +184,14 @@ namespace Fooyin::Bandcamp {
         m_progress->setMaximumHeight(4);
 
         // ── Track table ───────────────────────────────────────────────────────
-        m_table = new QTableWidget(0, 5);
-        m_table->setHorizontalHeaderLabels({tr("#"), tr("Title"), tr("Artist"), tr("Album"), tr("Duration")});
+        m_table = new QTableWidget(0, 6);
+        m_table->setHorizontalHeaderLabels({tr("#"), tr("Title"), tr("Artist"), tr("Album"), tr("Duration"), tr("ReplayGain")});
         m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
         m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
         m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
         m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
         m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_table->setAlternatingRowColors(true);
@@ -180,6 +221,7 @@ namespace Fooyin::Bandcamp {
         auto* layout = new QVBoxLayout(this);
         layout->addLayout(urlRow);
         layout->addLayout(albumRow);
+        layout->addLayout(optionsRow);
         layout->addWidget(m_progress);
         layout->addWidget(m_table, 1);
         layout->addLayout(statusRow);
@@ -226,14 +268,15 @@ namespace Fooyin::Bandcamp {
         setActionButtonsEnabled(false);
         m_album = {};
 
+        const bool extractRg = m_replayGainCheck->isChecked();
         auto* watcher = new QFutureWatcher<AlbumInfo>(this);
         connect(watcher, &QFutureWatcher<AlbumInfo>::finished, this, [this, watcher]() {
             onFetchFinished(watcher->result());
             watcher->deleteLater();
         });
-        watcher->setFuture(QtConcurrent::run([url]() {
+        watcher->setFuture(QtConcurrent::run([url, extractRg]() {
             BandcampFetcher f;
-            return f.fetchAlbum(url);
+            return f.fetchAlbum(url, extractRg);
         }));
     }
 
@@ -367,6 +410,8 @@ namespace Fooyin::Bandcamp {
     {
         m_fetchBtn->setEnabled(!on);
         m_urlEdit->setEnabled(!on);
+        m_replayGainCheck->setEnabled(!on);
+        m_cleanTempBtn->setEnabled(!on);
         m_progress->setVisible(on);
     }
 
@@ -392,17 +437,45 @@ namespace Fooyin::Bandcamp {
             auto* albumItem = new QTableWidgetItem(ti.album);
             auto* durItem   = new QTableWidgetItem(dur);
 
+            QString rgStr = u"-"_s;
+            if (ti.replayGain.hasTrackGain) {
+                rgStr = QString::asprintf("%+.2f dB", ti.replayGain.trackGainDb);
+            }
+            auto* rgItem = new QTableWidgetItem(rgStr);
+
             numItem->setTextAlignment(Qt::AlignCenter);
             durItem->setTextAlignment(Qt::AlignCenter);
+            rgItem->setTextAlignment(Qt::AlignCenter);
 
             numItem->setFlags(numItem->flags() & ~Qt::ItemIsEditable);
             durItem->setFlags(durItem->flags() & ~Qt::ItemIsEditable);
+            rgItem->setFlags(rgItem->flags() & ~Qt::ItemIsEditable);
 
             m_table->setItem(i, 0, numItem);
             m_table->setItem(i, 1, titleItem);
             m_table->setItem(i, 2, artItem);
             m_table->setItem(i, 3, albumItem);
             m_table->setItem(i, 4, durItem);
+            m_table->setItem(i, 5, rgItem);
+        }
+    }
+
+    void BandcampStreamDialog::onCleanTempClicked()
+    {
+        const QString stubDir = QDir::tempPath() + u"/fooyin-bandcamp"_s;
+        QDir dir{stubDir};
+        if (!dir.exists()) {
+            m_statusLabel->setText(tr("No temporary files found to clean."));
+            return;
+        }
+
+        const QStringList files = dir.entryList(QDir::Files | QDir::NoDotAndDotDot);
+        const int count = files.size();
+        if (dir.removeRecursively()) {
+            dir.mkpath(stubDir);
+            m_statusLabel->setText(tr("Cleaned %1 temporary file(s).").arg(count));
+        } else {
+            m_statusLabel->setText(tr("Failed to clean temporary files."));
         }
     }
 

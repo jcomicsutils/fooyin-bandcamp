@@ -1,4 +1,6 @@
 #include "bandcampfetcher.h"
+#include "bandcampinput.h"
+#include "replaygainparser.h"
 
 #include <QEventLoop>
 #include <QJsonArray>
@@ -7,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
 #include <QMutex>
@@ -24,22 +27,62 @@ namespace Fooyin::Bandcamp {
 
     BandcampFetcher::BandcampFetcher() = default;
 
-    QString BandcampFetcher::lastError() const { return m_lastError; }
+    QString BandcampFetcher::lastError() const
+    {
+        QMutexLocker locker(&m_errorMutex);
+        return m_lastError;
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    AlbumInfo BandcampFetcher::fetchAlbum(const QString& url)
+    AlbumInfo BandcampFetcher::fetchAlbum(const QString& url, bool extractReplayGain)
     {
-        m_lastError.clear();
+        {
+            QMutexLocker locker(&m_errorMutex);
+            m_lastError.clear();
+        }
         const QByteArray html = httpGet(url, kPageTimeoutMs);
         if (html.isEmpty())
             return {};
-        return parsePage(html, url);
+        AlbumInfo info = parsePage(html, url);
+
+        // Pre-cache stream URLs so playback starts instantly without re-fetching
+        for (TrackInfo& ti : info.tracks) {
+            if (!ti.streamUrl.isEmpty()) {
+                cacheStreamUrl(ti.bandcampUrl, ti.trackId, ti.trackNum, ti.streamUrl);
+            }
+        }
+
+        if (extractReplayGain && !info.tracks.isEmpty()) {
+            QThreadPool pool;
+            pool.setMaxThreadCount(4);
+            for (TrackInfo& ti : info.tracks) {
+                if (ti.streamUrl.isEmpty())
+                    continue;
+
+                pool.start([this, &ti]() {
+                    QByteArray head = fetchRange(ti.streamUrl, 0, 131071);
+                    if (!head.isEmpty()) {
+                        const size_t id3Size = id3v2TagSize(head);
+                        if (id3Size > 0 && id3Size + 8192 > static_cast<size_t>(head.size()) && id3Size + 8192 <= 1024 * 1024) {
+                            head = fetchRange(ti.streamUrl, 0, static_cast<qint64>(id3Size + 8191));
+                        }
+                        ti.replayGain = parseReplayGain(head);
+                    }
+                });
+            }
+            pool.waitForDone();
+        }
+
+        return info;
     }
 
-    QString BandcampFetcher::resolveStreamUrl(const QString& bandcampTrackUrl)
+    QString BandcampFetcher::resolveStreamUrl(const QString& bandcampTrackUrl, qint64 trackId, int trackNum)
     {
-        m_lastError.clear();
+        {
+            QMutexLocker locker(&m_errorMutex);
+            m_lastError.clear();
+        }
         const QByteArray html = httpGet(bandcampTrackUrl, kPageTimeoutMs);
         if (html.isEmpty())
             return {};
@@ -47,6 +90,32 @@ namespace Fooyin::Bandcamp {
         const QJsonObject tralbum = extractTralbum(html);
         const QJsonArray  tracks  = tralbum.value(u"trackinfo"_s).toArray();
 
+        // 1. If trackId is specified, match by track_id or id
+        if (trackId > 0) {
+            for (const QJsonValue& v : tracks) {
+                const QJsonObject obj = v.toObject();
+                const qint64 tid = obj.value(u"track_id"_s).toInteger(obj.value(u"id"_s).toInteger(0));
+                if (tid == trackId) {
+                    const QString mp3 = obj.value(u"file"_s).toObject().value(u"mp3-128"_s).toString();
+                    if (!mp3.isEmpty())
+                        return mp3;
+                }
+            }
+        }
+
+        // 2. If trackNum is specified, match by track_num
+        if (trackNum > 0) {
+            for (const QJsonValue& v : tracks) {
+                const QJsonObject obj = v.toObject();
+                if (obj.value(u"track_num"_s).toInt() == trackNum) {
+                    const QString mp3 = obj.value(u"file"_s).toObject().value(u"mp3-128"_s).toString();
+                    if (!mp3.isEmpty())
+                        return mp3;
+                }
+            }
+        }
+
+        // 3. Fallback: return the first available mp3-128
         for (const QJsonValue& v : tracks) {
             const QString mp3 = v.toObject()
             .value(u"file"_s).toObject()
@@ -67,9 +136,15 @@ namespace Fooyin::Bandcamp {
         return httpGet(url, kDownloadTimeoutMs);
     }
 
+    QByteArray BandcampFetcher::fetchRange(const QString& url, qint64 from, qint64 to, int timeoutMs)
+    {
+        const QByteArray range = "bytes=" + QByteArray::number(from) + '-' + QByteArray::number(to);
+        return httpGet(url, timeoutMs, range);
+    }
+
     // ── HTTP ──────────────────────────────────────────────────────────────────
 
-    QByteArray BandcampFetcher::httpGet(const QString& url, int timeoutMs)
+    QByteArray BandcampFetcher::httpGet(const QString& url, int timeoutMs, const QByteArray& rangeHeader)
     {
         QByteArray result;
         QString errorString;
@@ -87,6 +162,9 @@ namespace Fooyin::Bandcamp {
             req.setHeader(QNetworkRequest::UserAgentHeader, QLatin1StringView{kUserAgent});
             req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                              QNetworkRequest::NoLessSafeRedirectPolicy);
+            if (!rangeHeader.isEmpty()) {
+                req.setRawHeader("Range", rangeHeader);
+            }
 
             QNetworkReply* reply = nam.get(req);
 
@@ -129,6 +207,7 @@ namespace Fooyin::Bandcamp {
         }
 
         if (!errorString.isEmpty()) {
+            QMutexLocker locker(&m_errorMutex);
             m_lastError = errorString;
             qCWarning(BC_FETCH) << "HTTP error for" << url << ":" << m_lastError;
             return {};
@@ -201,10 +280,15 @@ namespace Fooyin::Bandcamp {
         for (const QJsonValue& tv : trackinfo) {
             const QJsonObject t = tv.toObject();
 
-            if (t.value(u"file"_s).toObject().value(u"mp3-128"_s).toString().isEmpty())
+            QString streamUrl = t.value(u"file"_s).toObject().value(u"mp3-128"_s).toString();
+            if (streamUrl.isEmpty())
                 continue;
+            if (streamUrl.startsWith(u"//"_s))
+                streamUrl.prepend(u"https:"_s);
 
             TrackInfo ti;
+            ti.streamUrl   = streamUrl;
+            ti.trackId     = t.value(u"track_id"_s).toInteger(t.value(u"id"_s).toInteger(0));
             ti.title       = t.value(u"title"_s).toString();
             ti.trackNum    = t.value(u"track_num"_s).toInt();
             ti.totalTracks = total;

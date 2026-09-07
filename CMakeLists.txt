@@ -41,6 +41,8 @@ create_fooyin_plugin(
         src/bandcampfetcher.cpp
         src/bandcampinput.h
         src/bandcampinput.cpp
+        src/replaygainparser.h
+        src/replaygainparser.cpp
         src/bandcampdialog.h
         src/bandcampdialog.cpp
 )

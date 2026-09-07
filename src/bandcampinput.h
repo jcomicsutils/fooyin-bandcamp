@@ -13,6 +13,8 @@ namespace Fooyin::Bandcamp {
     inline constexpr const char* kVirtualExt = "bcstream";
     inline constexpr const char* kScheme     = "bandcamp";
 
+    void cacheStreamUrl(const QString& bandcampUrl, qint64 trackId, int trackNum, const QString& streamUrl);
+
     // Forward declare the shared streaming state
     struct BandcampStreamState;
 
@@ -50,7 +52,12 @@ namespace Fooyin::Bandcamp {
                                         void stop()             override;
                                         void seek(uint64_t pos) override;
 
-                                        AudioBuffer readBuffer(size_t bytes) override;
+        [[nodiscard]] bool needsMoreInput() const override;
+        ReadResult readAudio(size_t bytes) override;
+        AudioBuffer readBuffer(size_t bytes) override;
+
+        [[nodiscard]] bool trackHasChanged() const override;
+        [[nodiscard]] Track changedTrack()   const override;
 
     private:
         void stopInternal();                       // call with m_mutex held
@@ -73,6 +80,9 @@ namespace Fooyin::Bandcamp {
         mutable QMutex m_statePtrMutex; // Guards access to the m_streamState pointer itself
         std::shared_ptr<BandcampStreamState> m_streamState;
         size_t m_readPos{0};
+
+        bool  m_trackChanged{false};
+        Track m_changedTrack;
     };
 
 } // namespace Fooyin::Bandcamp

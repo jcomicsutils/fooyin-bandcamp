@@ -25,6 +25,7 @@
 
 #include <QDialog>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -56,6 +57,7 @@ namespace Fooyin::Bandcamp {
         void onAddToNewPlaylistClicked();
         void onFetchFinished(const AlbumInfo& info);
         void onGlobalAlbumChanged(const QString& text);
+        void onCleanTempClicked();
 
         // Keep the combo box in sync with fooyin's playlist list.
         void refreshPlaylistCombo();
@@ -75,6 +77,8 @@ namespace Fooyin::Bandcamp {
         QLineEdit* m_urlEdit;
         QPushButton* m_fetchBtn;
         QLineEdit* m_albumEdit;
+        QCheckBox* m_replayGainCheck;
+        QPushButton* m_cleanTempBtn;
         QTableWidget* m_table;
         QLabel* m_statusLabel;
         QComboBox* m_playlistCombo;

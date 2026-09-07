@@ -10,8 +10,10 @@
 #include <gui/plugins/guiplugincontext.h>
 #include <utils/actions/actioncontainer.h>
 #include <utils/actions/actionmanager.h>
+#include <utils/actions/command.h>
 
 #include <QAction>
+#include <QDir>
 
 using namespace Qt::StringLiterals;
 
@@ -33,8 +35,9 @@ void BandcampPlugin::initialise(const GuiPluginContext& context)
         return;
 
     auto* action = new QAction(tr("Stream from Bandcamp\u2026"), this);
-    m_actionManager->registerAction(action, "Bandcamp.OpenStreamDialog");
-    libraryMenu->addAction(action);
+    auto* cmd = m_actionManager->registerAction(action, "Bandcamp.OpenStreamDialog");
+    cmd->setCategories({tr("Library")});
+    libraryMenu->addAction(cmd);
 
     QObject::connect(action, &QAction::triggered, this, [this]() {
         showStreamDialog();
@@ -43,6 +46,9 @@ void BandcampPlugin::initialise(const GuiPluginContext& context)
 
 void BandcampPlugin::shutdown()
 {
+    // Clean up ephemeral streaming stub files
+    QDir(QDir::tempPath() + u"/fooyin-bandcamp"_s).removeRecursively();
+
     m_playlists     = nullptr;
     m_player        = nullptr;
     m_actionManager = nullptr;

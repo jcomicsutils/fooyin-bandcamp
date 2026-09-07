@@ -5,11 +5,14 @@
 
 #include "bandcampinput.h"
 #include "bandcampfetcher.h"
+#include "replaygainparser.h"
 
 #include <core/track.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -19,6 +22,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QEventLoop>
+#include <QSettings>
 
 Q_LOGGING_CATEGORY(BC_INPUT, "fy.bandcamp.input")
 
@@ -50,6 +54,15 @@ namespace Fooyin::Bandcamp {
     static QHash<QString, StreamUrlCacheEntry> s_urlCache;
     static constexpr qint64 kCacheTtlSeconds = 55 * 60; // 55 minutes
 
+    void cacheStreamUrl(const QString& bandcampUrl, qint64 trackId, int trackNum, const QString& streamUrl)
+    {
+        if (streamUrl.isEmpty())
+            return;
+        const QString cacheKey = bandcampUrl + u"::"_s + QString::number(trackId) + u"::"_s + QString::number(trackNum);
+        QMutexLocker cacheLock(&s_urlCacheMutex);
+        s_urlCache.insert(cacheKey, {streamUrl, QDateTime::currentDateTimeUtc()});
+    }
+
     // Shared thread-safe state to prevent Use-After-Free crashes during downloads
     struct BandcampStreamState {
         QMutex mutex;
@@ -62,7 +75,7 @@ namespace Fooyin::Bandcamp {
     // Safely block and wait for chunks to arrive over the network
     static void waitForStreamData(std::shared_ptr<BandcampStreamState>& state, size_t requiredSize, QMutexLocker<QMutex>& locker) {
         while (!state->finished && !state->cancelRequested && static_cast<size_t>(state->data.size()) < requiredSize) {
-            state->waitCondition.wait(&state->mutex);
+            state->waitCondition.wait(&state->mutex, 100);
         }
     }
 
@@ -76,8 +89,16 @@ namespace Fooyin::Bandcamp {
     bool BandcampReader::canReadCover() const    { return true; }
     bool BandcampReader::canWriteMetaData() const { return false; }
 
-    bool BandcampReader::readTrack(const AudioSource& /*source*/, Track& track)
+    bool BandcampReader::readTrack(const AudioSource& source, Track& track)
     {
+        // Ensure the temporary stub file exists if missing
+        if (!source.filepath.isEmpty() && !QFile::exists(source.filepath)) {
+            QFileInfo fi{source.filepath};
+            QDir{}.mkpath(fi.dir().path());
+            QFile stub{source.filepath};
+            (void)stub.open(QIODevice::WriteOnly);
+        }
+
         const bool ok = !track.extraTag(u"BANDCAMP_URL"_s).isEmpty();
         if (!ok)
             qCWarning(BC_INPUT) << "BandcampReader: missing BANDCAMP_URL tag on track:" << track.title();
@@ -174,10 +195,10 @@ namespace Fooyin::Bandcamp {
 
         // Block until data arrives, or until we are told to give up.
         while (!state->cancelRequested &&
-            !state->finished &&
-            static_cast<size_t>(state->data.size()) <= position) {
-            state->waitCondition.wait(&state->mutex);
-            }
+               !state->finished &&
+               static_cast<size_t>(state->data.size()) <= position) {
+            state->waitCondition.wait(&state->mutex, 100);
+        }
 
             // If the wait ended because of cancellation or a short download rather
             // than because data arrived, report failure without moving m_readPos.
@@ -215,29 +236,46 @@ namespace Fooyin::Bandcamp {
         if (bandcampUrl.endsWith(u".bcstream"_s))
             bandcampUrl.chop(9);
 
-        BandcampFetcher fetcher;
-        QString streamUrl = fetcher.resolveStreamUrl(bandcampUrl);
+        qint64 trackId{0};
+        const QStringList idTags = track.extraTag(u"BANDCAMP_TRACK_ID"_s);
+        if (!idTags.isEmpty())
+            trackId = idTags.first().toLongLong();
+        const int trackNum = track.trackNumber().toInt();
 
-        if (streamUrl.isEmpty()) {
-            // Resolution failed — likely a 429 rate-limit from concurrent requests.
-            // Try to fall back to a recently cached CDN URL for this track so that
-            // a transient Bandcamp rate-limit does not stall fooyin's engine thread
-            // and break unrelated local-file playback.
+        BandcampFetcher fetcher;
+        const QString cacheKey = bandcampUrl + u"::"_s + QString::number(trackId) + u"::"_s + QString::number(trackNum);
+        QString streamUrl;
+
+        {
             QMutexLocker cacheLock(&s_urlCacheMutex);
-            const auto it = s_urlCache.constFind(bandcampUrl);
+            const auto it = s_urlCache.constFind(cacheKey);
             if (it != s_urlCache.constEnd() &&
                 it->resolvedAt.secsTo(QDateTime::currentDateTimeUtc()) < kCacheTtlSeconds) {
-                qCWarning(BC_INPUT) << "resolveStreamUrl failed (" << fetcher.lastError()
-                << ") — using cached CDN URL for" << track.title();
-            streamUrl = it->streamUrl;
+                streamUrl = it->streamUrl;
+            }
+        }
+
+        if (streamUrl.isEmpty()) {
+            streamUrl = fetcher.resolveStreamUrl(bandcampUrl, trackId, trackNum);
+            if (!streamUrl.isEmpty()) {
+                QMutexLocker cacheLock(&s_urlCacheMutex);
+                s_urlCache.insert(cacheKey, {streamUrl, QDateTime::currentDateTimeUtc()});
+            } else {
+                // Resolution failed — likely a 429 rate-limit from concurrent requests.
+                // Try to fall back to a recently cached CDN URL for this track so that
+                // a transient Bandcamp rate-limit does not stall fooyin's engine thread
+                // and break unrelated local-file playback.
+                QMutexLocker cacheLock(&s_urlCacheMutex);
+                const auto it = s_urlCache.constFind(cacheKey);
+                if (it != s_urlCache.constEnd()) {
+                    qCWarning(BC_INPUT) << "resolveStreamUrl failed (" << fetcher.lastError()
+                                        << ") — using cached CDN URL for" << track.title();
+                    streamUrl = it->streamUrl;
                 } else {
                     qCWarning(BC_INPUT) << "Could not resolve stream URL:" << fetcher.lastError();
                     return {};
                 }
-        } else {
-            // Cache the freshly resolved URL so future failures can fall back to it.
-            QMutexLocker cacheLock(&s_urlCacheMutex);
-            s_urlCache.insert(bandcampUrl, {streamUrl, QDateTime::currentDateTimeUtc()});
+            }
         }
 
         qCDebug(BC_INPUT) << "Streaming" << track.title() << "from" << streamUrl;
@@ -323,11 +361,6 @@ namespace Fooyin::Bandcamp {
         // m_mutex is NOT held here — we deliberately release it so that a
         // concurrent init() (triggered by fooyin retrying a track) can acquire
         // it, call stopInternal(), and zero m_dec without deadlocking.
-        //
-        // That creates a race: if a newer init() runs while we are waiting here,
-        // it will set cancelRequested on our state and zero m_dec. We must
-        // therefore check cancelRequested *after* the wait, before we touch m_dec,
-        // otherwise we call mp3dec_ex_open_cb on a zeroed struct → SIGSEGV.
         {
             QMutexLocker lock(&state->mutex);
             waitForStreamData(state, 131072, lock);
@@ -337,11 +370,20 @@ namespace Fooyin::Bandcamp {
                 return {};
             }
 
-            // A newer init() superseded us while we were waiting.
-            // m_dec has already been zeroed by its stopInternal() call — bail out
-            // before we acquire m_mutex and try to open a destroyed decoder.
-            if (state->cancelRequested) {
-                qCDebug(BC_INPUT) << "init() superseded by a newer request — aborting";
+            if (state->cancelRequested || abortToken().stop_requested()) {
+                qCDebug(BC_INPUT) << "init() superseded or aborted — exiting";
+                return {};
+            }
+
+            // If ID3v2 tag (e.g. embedded cover) extends beyond 128 KB, wait for
+            // tag plus initial audio frame so LAME tag can be located.
+            const size_t id3Size = id3v2TagSize(state->data);
+            if (id3Size > 0 && id3Size + 8192 > static_cast<size_t>(state->data.size()) && id3Size + 8192 <= 1024 * 1024) {
+                waitForStreamData(state, id3Size + 8192, lock);
+            }
+
+            if (state->cancelRequested || abortToken().stop_requested()) {
+                qCDebug(BC_INPUT) << "init() superseded or aborted — exiting";
                 return {};
             }
         }
@@ -358,6 +400,31 @@ namespace Fooyin::Bandcamp {
                 qCDebug(BC_INPUT) << "init() lost m_dec to a newer request — aborting";
                 return {};
             }
+        }
+
+        // Parse ReplayGain tags from initial in-memory stream buffer if enabled
+        QSettings settings;
+        const bool useRg = settings.value(u"Bandcamp/ExtractReplayGain"_s, true).toBool();
+        if (useRg) {
+            QMutexLocker stateLock(&state->mutex);
+            const ReplayGainData rg = parseReplayGain(state->data);
+            if (rg.hasTrackGain || rg.hasAlbumGain || rg.hasTrackPeak || rg.hasAlbumPeak) {
+                m_changedTrack = track;
+                if (rg.hasTrackGain) m_changedTrack.setRGTrackGain(rg.trackGainDb);
+                if (rg.hasAlbumGain) m_changedTrack.setRGAlbumGain(rg.albumGainDb);
+                if (rg.hasTrackPeak) m_changedTrack.setRGTrackPeak(rg.trackPeak);
+                if (rg.hasAlbumPeak) m_changedTrack.setRGAlbumPeak(rg.albumPeak);
+                m_trackChanged = true;
+                qCDebug(BC_INPUT) << "ReplayGain extracted for" << track.title()
+                                  << "- Track Gain:" << rg.trackGainDb << "dB, Album Gain:" << rg.albumGainDb
+                                  << "dB, Track Peak:" << rg.trackPeak << ", Album Peak:" << rg.albumPeak;
+            } else {
+                m_trackChanged = false;
+                m_changedTrack = {};
+            }
+        } else {
+            m_trackChanged = false;
+            m_changedTrack = {};
         }
 
         m_io.read = streamReadCb;
@@ -402,18 +469,15 @@ namespace Fooyin::Bandcamp {
 
     void BandcampDecoder::stop()
     {
-        // Do NOT set cancelRequested here before acquiring m_mutex.
-        //
-        // cancelRequested is visible to streamSeekCb and streamReadCb, which are
-        // called from within mp3dec_ex_seek / mp3dec_ex_read while m_mutex IS held.
-        // Setting it before we hold m_mutex means a concurrent seek() or readBuffer()
-        // could be mid-operation (e.g. minimp3 doing a binary search in mp3dec_ex_seek)
-        // when the flag flips. streamSeekCb would then return -1 unexpectedly, leaving
-        // minimp3's internal frame-index state corrupt, causing SIGSEGV on the next read.
-        //
-        // stopInternal() is called under m_mutex and sets cancelRequested there — that
-        // is sufficient. The 128KB wait in init() runs without m_mutex, so stop() can
-        // always acquire m_mutex immediately and unblock it through stopInternal().
+        {
+            QMutexLocker stateLock(&m_statePtrMutex);
+            if (m_streamState) {
+                QMutexLocker lock(&m_streamState->mutex);
+                m_streamState->finished = true;
+                m_streamState->cancelRequested = true;
+                m_streamState->waitCondition.wakeAll();
+            }
+        }
         QMutexLocker locker{&m_mutex};
         stopInternal();
     }
@@ -426,6 +490,8 @@ namespace Fooyin::Bandcamp {
         }
 
         *m_dec = {};
+        m_trackChanged = false;
+        m_changedTrack = {};
 
         std::shared_ptr<BandcampStreamState> state;
         {
@@ -446,25 +512,6 @@ namespace Fooyin::Bandcamp {
         QMutexLocker locker{&m_mutex};
         if (!m_initialized) return;
 
-        // streamSeekCb blocks until the download reaches the requested byte
-        // offset, so seeks into not-yet-downloaded data simply wait transparently.
-        //
-        // The only case streamSeekCb returns -1 is when the download has already
-        // finished and the target is beyond the file's actual end (e.g. the user
-        // dragged the seekbar past what the CDN delivered). In that case minimp3
-        // leaves cur_sample unchanged — no restore needed, and no corrupt state.
-        //
-        // We deliberately do NOT restore the previous position on failure: doing
-        // so puts the audio back at the old spot while the seekbar has already
-        // moved forward, desyncing them. A silent no-op on an out-of-range seek
-        // is far preferable — the audio just continues from wherever it was,
-        // which at least stays consistent with what minimp3 reports via cur_sample.
-        //
-        // framesForDuration() returns PCM frames (samples per channel). With
-        // MP3D_SEEK_TO_SAMPLE, mp3dec_ex_seek() expects a position in total
-        // interleaved samples (frames × channels) — the same unit that cur_sample
-        // counts. Forgetting to multiply means every seek lands at (1/channels)
-        // of the intended position, while the seekbar jumps to the correct spot.
         const int ch = m_format.channelCount();
         const uint64_t targetSample =
         m_format.framesForDuration(posMs) * static_cast<uint64_t>(ch > 0 ? ch : 1);
@@ -472,17 +519,26 @@ namespace Fooyin::Bandcamp {
             qCWarning(BC_INPUT) << "mp3dec_ex_seek failed for pos" << posMs << "ms (seek past end of file?)";
     }
 
-    AudioBuffer BandcampDecoder::readBuffer(size_t bytes)
+    bool BandcampDecoder::needsMoreInput() const
+    {
+        auto state = getState();
+        if (!state)
+            return false;
+        QMutexLocker locker(&state->mutex);
+        return !state->finished && !state->cancelRequested;
+    }
+
+    AudioDecoder::ReadResult BandcampDecoder::readAudio(size_t bytes)
     {
         QMutexLocker locker{&m_mutex};
 
         if (!m_initialized)
-            return {};
+            return ReadResult::endOfStream();
 
         const int    ch      = m_format.channelCount();
         const size_t samples = bytes / sizeof(mp3d_sample_t) / static_cast<size_t>(ch > 0 ? ch : 1);
         if (samples == 0)
-            return {};
+            return ReadResult::endOfStream();
 
         AudioBuffer buf{m_format, currentMs()};
         buf.resize(static_cast<int>(samples) * ch * static_cast<int>(sizeof(mp3d_sample_t)));
@@ -490,25 +546,49 @@ namespace Fooyin::Bandcamp {
         const size_t read = mp3dec_ex_read(
             m_dec,
             reinterpret_cast<mp3d_sample_t*>(buf.data()),
-                                           samples * static_cast<size_t>(ch));
+            samples * static_cast<size_t>(ch));
 
         if (read == 0) {
-            // Natural EOF: minimp3 has drained every frame. With MP3D_DO_NOT_SCAN
-            // the lazily-built frame index may be in an indeterminate state once
-            // the last frame is consumed, so calling mp3dec_ex_close() on it later
-            // (from stopInternal() during a replay init()) can SIGSEGV. Close and
-            // reset right here, while the decoder is still in a well-defined state,
-            // so stopInternal() sees m_initialized = false and skips the close.
+            auto state = getState();
+            bool stillStreaming = false;
+            if (state) {
+                QMutexLocker stateLock(&state->mutex);
+                stillStreaming = !state->finished && !state->cancelRequested;
+            }
+
+            if (stillStreaming) {
+                return ReadResult::needMoreInput();
+            }
+
+            // Natural EOF: minimp3 has drained every frame.
             mp3dec_ex_close(m_dec);
             *m_dec = {};
             m_initialized = false;
-            return {};
+            return ReadResult::endOfStream();
         }
 
         if (read < samples * static_cast<size_t>(ch))
             buf.resize(static_cast<int>(read) * static_cast<int>(sizeof(mp3d_sample_t)));
 
-        return buf;
+        return ReadResult::data(std::move(buf));
+    }
+
+    AudioBuffer BandcampDecoder::readBuffer(size_t bytes)
+    {
+        auto res = readAudio(bytes);
+        return res.status == ReadStatus::DecodedAudio ? std::move(res.buffer) : AudioBuffer{};
+    }
+
+    bool BandcampDecoder::trackHasChanged() const
+    {
+        QMutexLocker locker{&m_mutex};
+        return m_trackChanged;
+    }
+
+    Track BandcampDecoder::changedTrack() const
+    {
+        QMutexLocker locker{&m_mutex};
+        return m_changedTrack;
     }
 
     uint64_t BandcampDecoder::currentMs() const
