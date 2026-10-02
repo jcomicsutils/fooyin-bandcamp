@@ -202,9 +202,9 @@ namespace Fooyin::Bandcamp {
         m_playlistCombo       = new QComboBox;
         m_playlistCombo->setMinimumWidth(180);
         m_playlistCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        m_addToPlaylistBtn    = new QPushButton(tr("Add to Playlist"));
-        m_addToNewPlaylistBtn = new QPushButton(tr("Add to New Playlist"));
-        auto* closeBtn        = new QPushButton(tr("Close"));
+        m_addToPlaylistBtn       = new QPushButton(tr("Add to Playlist"));
+        m_addToActivePlaylistBtn = new QPushButton(tr("Add to Active Playlist"));
+        auto* closeBtn           = new QPushButton(tr("Close"));
 
         setActionButtonsEnabled(false);
 
@@ -215,7 +215,7 @@ namespace Fooyin::Bandcamp {
         auto* bottomRow = new QHBoxLayout;
         bottomRow->addWidget(m_playlistCombo, 1);
         bottomRow->addWidget(m_addToPlaylistBtn);
-        bottomRow->addWidget(m_addToNewPlaylistBtn);
+        bottomRow->addWidget(m_addToActivePlaylistBtn);
         bottomRow->addWidget(closeBtn);
 
         auto* layout = new QVBoxLayout(this);
@@ -229,6 +229,7 @@ namespace Fooyin::Bandcamp {
 
         // Populate the combo with whatever playlists already exist.
         refreshPlaylistCombo();
+        updateActivePlaylistButtonTooltip();
 
         // Keep the combo in sync as playlists are added/removed/renamed.
         // These signals carry a Playlist* argument; use a lambda to drop it so
@@ -239,13 +240,17 @@ namespace Fooyin::Bandcamp {
                 this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
         connect(m_playlists, &PlaylistHandler::playlistRenamed,
                 this, [this](Fooyin::Playlist*){ refreshPlaylistCombo(); });
+        connect(m_playlists, &PlaylistHandler::activePlaylistChanged,
+                this, [this](Fooyin::Playlist*){ updateActivePlaylistButtonTooltip(); });
+        connect(m_playlists, &PlaylistHandler::activePlaylistDeleted,
+                this, [this](){ updateActivePlaylistButtonTooltip(); });
 
-        connect(m_fetchBtn,            &QPushButton::clicked,     this, &BandcampStreamDialog::onFetchClicked);
-        connect(m_addToPlaylistBtn,    &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToPlaylistClicked);
-        connect(m_addToNewPlaylistBtn, &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToNewPlaylistClicked);
-        connect(closeBtn,              &QPushButton::clicked,     this, &QDialog::accept);
-        connect(m_urlEdit,             &QLineEdit::returnPressed, this, &BandcampStreamDialog::onFetchClicked);
-        connect(m_albumEdit,           &QLineEdit::textEdited,    this, &BandcampStreamDialog::onGlobalAlbumChanged);
+        connect(m_fetchBtn,               &QPushButton::clicked,     this, &BandcampStreamDialog::onFetchClicked);
+        connect(m_addToPlaylistBtn,       &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToPlaylistClicked);
+        connect(m_addToActivePlaylistBtn, &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToActivePlaylistClicked);
+        connect(closeBtn,                 &QPushButton::clicked,     this, &QDialog::accept);
+        connect(m_urlEdit,                &QLineEdit::returnPressed, this, &BandcampStreamDialog::onFetchClicked);
+        connect(m_albumEdit,              &QLineEdit::textEdited,    this, &BandcampStreamDialog::onGlobalAlbumChanged);
     }
 
     BandcampStreamDialog::~BandcampStreamDialog() = default;
@@ -323,23 +328,57 @@ namespace Fooyin::Bandcamp {
         // The combo stores each playlist's UId as Qt::UserRole data.
         const int idx = m_playlistCombo->currentIndex();
         if (idx < 0) {
-            // No playlists exist yet — create one instead.
-            onAddToNewPlaylistClicked();
+            createAndAppendToNewPlaylist();
             return;
         }
 
         const auto uid = m_playlistCombo->itemData(idx).value<Fooyin::UId>();
+        if (!uid.isValid()) {
+            createAndAppendToNewPlaylist();
+            return;
+        }
+
         Playlist* pl = m_playlists->playlistById(uid);
         if (!pl) {
             // The playlist was deleted between the combo refresh and the click.
-            onAddToNewPlaylistClicked();
+            createAndAppendToNewPlaylist();
+            return;
+        }
+
+        if (pl->isAutoPlaylist() || pl->isLocked()) {
+            m_statusLabel->setText(tr("Playlist \"%1\" is locked or an auto-playlist.").arg(pl->name()));
             return;
         }
 
         deferredAppend(pl, m_album);
     }
 
-    void BandcampStreamDialog::onAddToNewPlaylistClicked()
+    void BandcampStreamDialog::onAddToActivePlaylistClicked()
+    {
+        if (m_album.tracks.isEmpty() || !m_playlists)
+            return;
+
+        syncTableToAlbum();
+
+        Playlist* pl = m_playlists->activePlaylist();
+        if (!pl && m_playlists->playlistCount() > 0) {
+            pl = m_playlists->playlistByIndex(0);
+        }
+
+        if (!pl) {
+            createAndAppendToNewPlaylist();
+            return;
+        }
+
+        if (pl->isAutoPlaylist() || pl->isLocked()) {
+            m_statusLabel->setText(tr("Active playlist \"%1\" is locked or an auto-playlist.").arg(pl->name()));
+            return;
+        }
+
+        deferredAppend(pl, m_album);
+    }
+
+    void BandcampStreamDialog::createAndAppendToNewPlaylist()
     {
         if (m_album.tracks.isEmpty() || !m_playlists)
             return;
@@ -375,32 +414,46 @@ namespace Fooyin::Bandcamp {
         deferredAppend(pl, m_album);
     }
 
+    void BandcampStreamDialog::updateActivePlaylistButtonTooltip()
+    {
+        if (!m_playlists || !m_addToActivePlaylistBtn)
+            return;
+
+        Playlist* pl = m_playlists->activePlaylist();
+        if (pl) {
+            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to active playlist \"%1\"").arg(pl->name()));
+        } else {
+            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to the active playlist"));
+        }
+    }
+
     void BandcampStreamDialog::refreshPlaylistCombo()
     {
         if (!m_playlists)
             return;
 
         // Remember what was selected so we can restore it after the repopulate.
-        const auto prevUid = (m_playlistCombo->currentIndex() >= 0)
-        ? m_playlistCombo->currentData().value<Fooyin::UId>()
-        : Fooyin::UId{};
+        const bool hadPrevSelection = (m_playlistCombo->currentIndex() >= 0);
+        const auto prevUid = hadPrevSelection
+            ? m_playlistCombo->currentData().value<Fooyin::UId>()
+            : Fooyin::UId{};
 
         m_playlistCombo->blockSignals(true);
         m_playlistCombo->clear();
 
+        m_playlistCombo->addItem(tr("<New Playlist>"), QVariant::fromValue(Fooyin::UId{}));
+
         const auto pls = m_playlists->playlists();
         int restoreIdx = 0;
-        int i = 0;
+        int i = 1;
         for (Playlist* pl : pls) {
             m_playlistCombo->addItem(pl->name(), QVariant::fromValue(pl->id()));
-            if (pl->id() == prevUid)
+            if (hadPrevSelection && prevUid.isValid() && pl->id() == prevUid)
                 restoreIdx = i;
             ++i;
         }
 
-        if (m_playlistCombo->count() > 0)
-            m_playlistCombo->setCurrentIndex(restoreIdx);
-
+        m_playlistCombo->setCurrentIndex(restoreIdx);
         m_playlistCombo->blockSignals(false);
     }
 
@@ -418,7 +471,7 @@ namespace Fooyin::Bandcamp {
     void BandcampStreamDialog::setActionButtonsEnabled(bool on)
     {
         m_addToPlaylistBtn->setEnabled(on);
-        m_addToNewPlaylistBtn->setEnabled(on);
+        m_addToActivePlaylistBtn->setEnabled(on);
     }
 
     void BandcampStreamDialog::populateTable(const AlbumInfo& info)

@@ -19,7 +19,7 @@ A [fooyin](https://github.com/ludouzi/fooyin) plugin that lets you stream Bandca
 - Album art, artist, title, duration, and track numbers all populated
 - ReplayGain metadata support (track/album gain and peak) populated into fooyin playlists
 - Optional ReplayGain extraction with user preference persistence across sessions
-- Add tracks to an existing fooyin playlist or create a new one
+- Add tracks to an existing fooyin playlist, create a new one from the dropdown, or append directly to the active playlist
 - Stream URLs are re-resolved at decode time (Bandcamp CDN links expire after ~1 hour)
 - fooyin is able to scrobble loaded tracks
 - Edit track titles, artists, and albums directly in the table before adding them to your playlist
@@ -51,7 +51,7 @@ cp build/fyplugin_bandcampinput.so ~/.local/lib/fooyin/plugins/
 3. (Optional) Check or uncheck **Extract ReplayGain metadata** (your choice is remembered across sessions)
 4. Click **Fetch** and wait for the tracklist to load
 5. (Optional) Use the global **Album** field to change the album name for all tracks at once, or double-click the Title, Artist, or Album cells in the table to edit individual tracks
-6. Select a target playlist from the dropdown, then click **Add to Playlist** or click **Add to New Playlist** to create one on the fly
+6. Choose a target playlist from the dropdown (or select `<New Playlist>`) and click **Add to Playlist**, or click **Add to Active Playlist** to append directly to the currently playing/active playlist
 7. Play tracks as normal
 8. (Optional) Click **Clean Temp Files** in the dialog at any time to clear ephemeral stream stub files
 
