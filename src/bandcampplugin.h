@@ -13,6 +13,10 @@ class PlaylistHandler;
 class PlayerController;
 }
 
+#ifndef FOOYIN_PLUGIN_IID
+#define FOOYIN_PLUGIN_IID "org.fooyin.fooyin.plugin/1.0"
+#endif
+
 namespace Fooyin::Bandcamp {
 
 class BandcampPlugin : public QObject,
@@ -22,7 +26,7 @@ class BandcampPlugin : public QObject,
                        public GuiPlugin
 {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "org.fooyin.fooyin.plugin/1.0" FILE "bandcamp.json")
+    Q_PLUGIN_METADATA(IID FOOYIN_PLUGIN_IID FILE "bandcamp.json")
     Q_INTERFACES(Fooyin::Plugin Fooyin::CorePlugin Fooyin::InputPlugin Fooyin::GuiPlugin)
 
 public:
