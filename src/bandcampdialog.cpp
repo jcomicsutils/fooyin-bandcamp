@@ -5,6 +5,7 @@
 #include <core/player/playercontroller.h>
 #include <core/playlist/playlisthandler.h>
 #include <core/track.h>
+#include <gui/playlist/currentplaylistcontroller.h>
 
 // UId must be registered with Qt's metatype system to be stored in QVariant.
 // fooyin may already declare this; if you get a compile error about UId and
@@ -133,10 +134,12 @@ namespace Fooyin::Bandcamp {
 
     BandcampStreamDialog::BandcampStreamDialog(PlaylistHandler* playlists,
                                                PlayerController* player,
+                                               CurrentPlaylistController* playlistSelection,
                                                QWidget* parent)
     : QDialog{parent}
     , m_playlists{playlists}
     , m_player{player}
+    , m_playlistSelection{playlistSelection}
     {
         setWindowTitle(tr("Stream from Bandcamp"));
         setMinimumSize(680, 440);
@@ -244,6 +247,10 @@ namespace Fooyin::Bandcamp {
                 this, [this](Fooyin::Playlist*){ updateActivePlaylistButtonTooltip(); });
         connect(m_playlists, &PlaylistHandler::activePlaylistDeleted,
                 this, [this](){ updateActivePlaylistButtonTooltip(); });
+        if (m_playlistSelection) {
+            connect(m_playlistSelection, &CurrentPlaylistController::currentPlaylistChanged,
+                    this, [this](Fooyin::Playlist*, Fooyin::Playlist*){ updateActivePlaylistButtonTooltip(); });
+        }
 
         connect(m_fetchBtn,               &QPushButton::clicked,     this, &BandcampStreamDialog::onFetchClicked);
         connect(m_addToPlaylistBtn,       &QPushButton::clicked,     this, &BandcampStreamDialog::onAddToPlaylistClicked);
@@ -360,7 +367,10 @@ namespace Fooyin::Bandcamp {
 
         syncTableToAlbum();
 
-        Playlist* pl = m_playlists->activePlaylist();
+        Playlist* pl = m_playlistSelection ? m_playlistSelection->currentPlaylist() : nullptr;
+        if (!pl) {
+            pl = m_playlists->activePlaylist();
+        }
         if (!pl && m_playlists->playlistCount() > 0) {
             pl = m_playlists->playlistByIndex(0);
         }
@@ -371,7 +381,7 @@ namespace Fooyin::Bandcamp {
         }
 
         if (pl->isAutoPlaylist() || pl->isLocked()) {
-            m_statusLabel->setText(tr("Active playlist \"%1\" is locked or an auto-playlist.").arg(pl->name()));
+            m_statusLabel->setText(tr("Playlist \"%1\" is locked or an auto-playlist.").arg(pl->name()));
             return;
         }
 
@@ -419,11 +429,15 @@ namespace Fooyin::Bandcamp {
         if (!m_playlists || !m_addToActivePlaylistBtn)
             return;
 
-        Playlist* pl = m_playlists->activePlaylist();
+        Playlist* pl = m_playlistSelection ? m_playlistSelection->currentPlaylist() : nullptr;
+        if (!pl) {
+            pl = m_playlists->activePlaylist();
+        }
+
         if (pl) {
-            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to active playlist \"%1\"").arg(pl->name()));
+            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to selected playlist \"%1\"").arg(pl->name()));
         } else {
-            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to the active playlist"));
+            m_addToActivePlaylistBtn->setToolTip(tr("Append tracks to the active/selected playlist"));
         }
     }
 

@@ -11,6 +11,7 @@ namespace Fooyin {
 class ActionManager;
 class PlaylistHandler;
 class PlayerController;
+class CurrentPlaylistController;
 }
 
 #ifndef FOOYIN_PLUGIN_IID
@@ -49,9 +50,10 @@ private:
     // this is now a plain private helper rather than a virtual override.
     void showStreamDialog();
 
-    PlaylistHandler*  m_playlists{nullptr};
-    PlayerController* m_player{nullptr};
-    ActionManager*    m_actionManager{nullptr};
+    PlaylistHandler*           m_playlists{nullptr};
+    PlayerController*          m_player{nullptr};
+    CurrentPlaylistController* m_playlistSelection{nullptr};
+    ActionManager*             m_actionManager{nullptr};
 };
 
 } // namespace Fooyin::Bandcamp

@@ -27,7 +27,8 @@ void BandcampPlugin::initialise(const CorePluginContext& context)
 
 void BandcampPlugin::initialise(const GuiPluginContext& context)
 {
-    m_actionManager = context.actionManager;
+    m_actionManager     = context.actionManager;
+    m_playlistSelection = context.playlistSelection;
 
     // Add "Stream from Bandcamp…" to the Library menu bar entry.
     auto* libraryMenu = m_actionManager->actionContainer(Constants::Menus::Library);
@@ -49,9 +50,10 @@ void BandcampPlugin::shutdown()
     // Clean up ephemeral streaming stub files
     QDir(QDir::tempPath() + u"/fooyin-bandcamp"_s).removeRecursively();
 
-    m_playlists     = nullptr;
-    m_player        = nullptr;
-    m_actionManager = nullptr;
+    m_playlists         = nullptr;
+    m_player            = nullptr;
+    m_playlistSelection = nullptr;
+    m_actionManager     = nullptr;
 }
 
 // ── InputPlugin ───────────────────────────────────────────────────────────
@@ -73,7 +75,7 @@ InputCreator BandcampPlugin::inputCreator() const
 
 void BandcampPlugin::showStreamDialog()
 {
-    auto* dlg = new BandcampStreamDialog(m_playlists, m_player, nullptr);
+    auto* dlg = new BandcampStreamDialog(m_playlists, m_player, m_playlistSelection, nullptr);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->show();
 }

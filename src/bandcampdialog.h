@@ -35,6 +35,7 @@ class QTableWidget;
 namespace Fooyin {
     class PlaylistHandler;
     class PlayerController;
+    class CurrentPlaylistController;
     class Playlist;
 }
 
@@ -47,6 +48,7 @@ namespace Fooyin::Bandcamp {
     public:
         explicit BandcampStreamDialog(PlaylistHandler* playlists,
                                       PlayerController* player,
+                                      CurrentPlaylistController* playlistSelection = nullptr,
                                       QWidget* parent = nullptr);
         ~BandcampStreamDialog() override;
 
@@ -72,8 +74,9 @@ namespace Fooyin::Bandcamp {
         // Append tracks to pl after a one-tick defer (crash-safety, see above).
         void deferredAppend(Playlist* pl, const AlbumInfo& album);
 
-        PlaylistHandler* m_playlists;
-        PlayerController* m_player;
+        PlaylistHandler*           m_playlists;
+        PlayerController*          m_player;
+        CurrentPlaylistController* m_playlistSelection{nullptr};
 
         QLineEdit* m_urlEdit;
         QPushButton* m_fetchBtn;
